@@ -1,8 +1,11 @@
+import os
+import sys
 import argparse
 import logging
 import shutil
 
 import matplotlib.pyplot as plt
+import seaborn as sns
 import numpy as np
 import pandas as pd
 
@@ -10,9 +13,7 @@ from environment import ChatEnvironment, Action, UserConfig
 from qlearningagent import QLearningAgent
 from shared.config import DEFAULT_TRAINED_MODEL_PATH, MAX_STEPS_PER_EPISODE, BEST_MODEL_PATH
 
-# Configure Logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(message)s')
-
 
 def run_training_session():
     print("--- Starting Reinforcement Learning Training ---")
@@ -34,7 +35,6 @@ def run_training_session():
         "propensity_b": []
     }
 
-    # --- Checkpointing variables to save the best model ---
     best_rolling_reward = -np.inf
     rolling_window = 50
     best_model_saved = False
@@ -71,7 +71,7 @@ def run_training_session():
             current_rolling_reward = np.mean(history["total_reward"][-rolling_window:])
             if current_rolling_reward > best_rolling_reward:
                 best_rolling_reward = current_rolling_reward
-                best_episode = episode + 1  # Store the episode number
+                best_episode = episode + 1
                 agent.save_model(BEST_MODEL_PATH)
                 best_model_saved = True
                 print(f"** New best model saved at episode {episode + 1} "
@@ -84,12 +84,10 @@ def run_training_session():
                   f"Epsilon: {agent.epsilon:.4f}")
 
     print("--- Training Completed ---")
-    # Overwrite the default model with the best one found during training
     if best_model_saved:
         shutil.copy(BEST_MODEL_PATH, DEFAULT_TRAINED_MODEL_PATH)
         print(f"Final model '{DEFAULT_TRAINED_MODEL_PATH}' updated with the best performing agent.")
     else:
-        # If no "best" model was ever saved, save the final one as default
         agent.save_model(DEFAULT_TRAINED_MODEL_PATH)
         print(f"Final model saved to '{DEFAULT_TRAINED_MODEL_PATH}'")
 
@@ -104,12 +102,10 @@ def plot_results(df, best_episode: int):
 
     plt.figure(figsize=(12, 5))
 
-    # Plot 1: Reward over time
     plt.subplot(1, 2, 1)
     plt.plot(df['total_reward'], alpha=0.3, color='gray', label='Raw Reward')
     plt.plot(df['total_reward'].rolling(rolling_window).mean(), color='blue', linewidth=2, label='Reward Trend')
 
-    # Add a vertical line to mark the best model checkpoint
     if best_episode != -1:
         plt.axvline(x=best_episode, color='green', linestyle='--', linewidth=2,
                     label=f'Best Model (Ep. {best_episode})')
@@ -120,7 +116,6 @@ def plot_results(df, best_episode: int):
     plt.legend()
     plt.grid(True, alpha=0.3)
 
-    # Plot 2: Toxicity over time
     plt.subplot(1, 2, 2)
     plt.plot(df['avg_toxicity'], alpha=0.3, color='gray', label='Raw Toxicity')
     plt.plot(df['avg_toxicity'].rolling(rolling_window).mean(), color='red', linewidth=2, label='Toxicity Trend')
@@ -137,14 +132,9 @@ def plot_results(df, best_episode: int):
 
 
 def run_evaluation_session(model_path: str, n_episodes: int, propensity_a: float, propensity_b: float):
-    """
-    Runs a test session with a trained agent.
-    The agent will not learn or explore.
-    """
     print(f"\n--- Starting Evaluation Session for model: {model_path} ---")
     print(f"Custom User Propensities: UserA={propensity_a}, UserB={propensity_b}")
 
-    # Create a custom user configuration for the environment
     custom_users = {
         'user_A': UserConfig(propensity=propensity_a),
         'user_B': UserConfig(propensity=propensity_b)
@@ -187,58 +177,180 @@ def run_evaluation_session(model_path: str, n_episodes: int, propensity_a: float
     print("--- Evaluation Completed ---")
 
 
+def plot_from_csv(csv_path: str = "results/training_results.csv", out_dir: str = "results/plots"):
+    os.makedirs(out_dir, exist_ok=True)
+    if not os.path.exists(csv_path):
+        print(f"File `{csv_path}` not found. Generate logs first or provide the correct path.")
+        return
+
+    df = pd.read_csv(csv_path)
+    print("Columns available:", list(df.columns))
+
+    if "episode" in df.columns:
+        df.set_index("episode", inplace=True)
+
+    required_metrics = ["total_reward", "avg_toxicity"]
+    if not all(col in df.columns for col in required_metrics):
+        print(f"Missing one of the required columns: {required_metrics}")
+        return
+
+    window = 50
+    fig, ax1 = plt.subplots(figsize=(12, 6))
+
+    color = 'tab:blue'
+    ax1.set_xlabel('Episode')
+    ax1.set_ylabel('Total Reward (MA)', color=color)
+    ax1.plot(df.index, df['total_reward'].rolling(window).mean(), color=color, linewidth=2, label='Reward (MA)')
+    ax1.tick_params(axis='y', labelcolor=color)
+    ax1.grid(True, alpha=0.3)
+
+    ax2 = ax1.twinx()
+    color = 'tab:red'
+    ax2.set_ylabel('Avg Toxicity (MA)', color=color)
+    ax2.plot(df.index, df['avg_toxicity'].rolling(window).mean(), color=color, linewidth=2, linestyle='--', label='Toxicity (MA)')
+    ax2.tick_params(axis='y', labelcolor=color)
+
+    plt.title(f'Training Progress: Reward vs Toxicity (Rolling Window {window})')
+    fig.tight_layout()
+    plt.savefig(os.path.join(out_dir, "training_progress_dual.png"))
+    plt.close()
+
+    # 2. Epsilon Decay
+    if "epsilon" in df.columns:
+        plt.figure(figsize=(10, 5))
+        plt.plot(df.index, df['epsilon'], color='purple', linewidth=2)
+        plt.title('Epsilon Decay over Episodes')
+        plt.xlabel('Episode')
+        plt.ylabel('Epsilon')
+        plt.grid(True, alpha=0.3)
+        plt.savefig(os.path.join(out_dir, "epsilon_decay.png"))
+        plt.close()
+
+    # 3. Scatter Plot: Reward vs Toxicity
+    plt.figure(figsize=(8, 6))
+    sns.scatterplot(x='avg_toxicity', y='total_reward', data=df, alpha=0.5, edgecolor=None)
+    plt.title('Correlation: Total Reward vs Avg Toxicity')
+    plt.xlabel('Average Toxicity')
+    plt.ylabel('Total Reward')
+    plt.grid(True, alpha=0.3)
+    plt.savefig(os.path.join(out_dir, "correlation_reward_toxicity.png"))
+    plt.close()
+
+    # 4. Histograms of Metrics
+    fig, axes = plt.subplots(1, 2, figsize=(14, 5))
+
+    sns.histplot(df['total_reward'], bins=30, kde=True, ax=axes[0], color='blue')
+    axes[0].set_title('Distribution of Total Rewards')
+
+    sns.histplot(df['avg_toxicity'], bins=30, kde=True, ax=axes[1], color='red')
+    axes[1].set_title('Distribution of Average Toxicity')
+
+    plt.tight_layout()
+    plt.savefig(os.path.join(out_dir, "distributions.png"))
+    plt.close()
+
+    # 5. Heatmap: Toxicity by Propensity Bins (if propensities exist)
+    if "propensity_a" in df.columns and "propensity_b" in df.columns:
+        bins = np.linspace(0, 1, 11)  # 0.0, 0.1, ..., 1.0
+        labels = [f"{i:.1f}" for i in bins[:-1]]
+
+        df['prop_a_bin'] = pd.cut(df['propensity_a'], bins=bins, labels=labels, include_lowest=True)
+        df['prop_b_bin'] = pd.cut(df['propensity_b'], bins=bins, labels=labels, include_lowest=True)
+
+        pivot_table = df.pivot_table(index='prop_a_bin', columns='prop_b_bin', values='avg_toxicity', aggfunc='mean')
+
+        plt.figure(figsize=(10, 8))
+        sns.heatmap(pivot_table, annot=True, fmt=".2f", cmap="coolwarm", cbar_kws={'label': 'Avg Toxicity'})
+        plt.title('Heatmap: Avg Toxicity by User Propensities')
+        plt.xlabel('User B Propensity')
+        plt.ylabel('User A Propensity')
+        plt.tight_layout()
+        plt.savefig(os.path.join(out_dir, "heatmap_toxicity_propensities.png"))
+        plt.close()
+
+        # 6. Scatter with Hue for Propensities
+        plt.figure(figsize=(10, 6))
+        df['total_propensity'] = df['propensity_a'] + df['propensity_b']
+
+        scatter = plt.scatter(df['avg_toxicity'], df['total_reward'],
+                            c=df['total_propensity'], cmap='viridis', alpha=0.6)
+        plt.colorbar(scatter, label='Sum of Propensities (A+B)')
+        plt.title('Reward vs Toxicity (Colored by User Propensity)')
+        plt.xlabel('Average Toxicity')
+        plt.ylabel('Total Reward')
+        plt.grid(True, alpha=0.3)
+        plt.savefig(os.path.join(out_dir, "scatter_reward_toxicity_propensity.png"))
+        plt.close()
+
+    print(f"All plots saved to directory: {out_dir}")
+
+
 if __name__ == "__main__":
-    if __name__ == "__main__":
-        parser = argparse.ArgumentParser(description="Train or evaluate the Mediator Bot.")
-        parser.add_argument(
-            "--mode",
-            type=str,
-            choices=["train", "eval"],
-            default="train",
-            help="Set to 'train' to run a full training session, or 'eval' to test an existing model."
-        )
-        parser.add_argument(
-            "--model-path",
-            type=str,
-            default=DEFAULT_TRAINED_MODEL_PATH,
-            help="Path to the model file for evaluation."
-        )
-        parser.add_argument(
-            "--eval-episodes",
-            type=int,
-            default=1000,
-            help="Number of episodes to run during an evaluation session."
-        )
-        parser.add_argument(
-            "--propensity-a",
+    parser = argparse.ArgumentParser(description="Train, evaluate or plot results for the Mediator Bot.")
+    parser.add_argument(
+        "--mode",
+        type=str,
+        choices=["train", "eval", "plot"],
+        default="train",
+        help="Set to 'train' to run a full training session, or 'eval' to test an existing model."
+    )
+    parser.add_argument(
+        "--model-path",
+        type=str,
+        default=DEFAULT_TRAINED_MODEL_PATH,
+        help="Path to the model file for evaluation."
+    )
+    parser.add_argument(
+        "--eval-episodes",
+        type=int,
+        default=1000,
+        help="Number of episodes to run during an evaluation session."
+    )
+    parser.add_argument(
+        "--propensity-a",
             type=float,
             help="Set toxicity propensity for User A during evaluation (e.g., 0.7)."
+    )
+    parser.add_argument(
+        "--propensity-b",
+        type=float,
+        help="Set toxicity propensity for User B during evaluation (e.g., 0.2)."
+    )
+    parser.add_argument(
+        "--csv-path",
+        type=str,
+        default="results/training_results.csv",
+        help="Path to evaluation CSV used when --mode plot is selected."
+    )
+    parser.add_argument(
+        "--out-dir",
+        type=str,
+        default="results/plots",
+        help="Directory to save plots when --mode plot is selected."
+    )
+    args = parser.parse_args()
+
+    prop_a = args.propensity_a if args.propensity_a is not None else 0.3
+    prop_b = args.propensity_b if args.propensity_b is not None else 0.6
+
+    if args.mode == "train":
+        df_results, best_episode = run_training_session()
+        plot_results(df_results, best_episode)
+
+        print("\n--- Evaluating Final (Best) Model ---")
+        run_evaluation_session(
+            model_path=DEFAULT_TRAINED_MODEL_PATH,
+            n_episodes=args.eval_episodes,
+            propensity_a=prop_a,
+            propensity_b=prop_b
         )
-        parser.add_argument(
-            "--propensity-b",
-            type=float,
-            help="Set toxicity propensity for User B during evaluation (e.g., 0.2)."
+    elif args.mode == "eval":
+        run_evaluation_session(
+            model_path=args.model_path,
+            n_episodes=args.eval_episodes,
+            propensity_a=prop_a,
+            propensity_b=prop_b
         )
-        args = parser.parse_args()
-
-        prop_a = args.propensity_a if args.propensity_a is not None else 0.3
-        prop_b = args.propensity_b if args.propensity_b is not None else 0.6
-
-        if args.mode == "train":
-            df_results, best_episode = run_training_session()
-            plot_results(df_results, best_episode)
-
-            print("\n--- Evaluating Final (Best) Model ---")
-            run_evaluation_session(
-                model_path=DEFAULT_TRAINED_MODEL_PATH,
-                n_episodes=args.eval_episodes,
-                propensity_a=prop_a,
-                propensity_b=prop_b
-            )
-        elif args.mode == "eval":
-            run_evaluation_session(
-                model_path=args.model_path,
-                n_episodes=args.eval_episodes,
-                propensity_a=prop_a,
-                propensity_b=prop_b
-            )
+    elif args.mode == "plot":
+        plot_from_csv(csv_path=args.csv_path, out_dir=args.out_dir)
+        sys.exit(0)
